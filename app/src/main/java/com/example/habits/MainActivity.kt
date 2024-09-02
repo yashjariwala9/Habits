@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,7 +22,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
 import androidx.work.*
-import androidx.work.WorkManager
 import com.example.habits.ui.theme.HabitsTheme
 import java.time.*
 import java.time.format.DateTimeFormatter
@@ -32,14 +32,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Initialize WorkManager for background tasks
         workManager = WorkManager.getInstance(applicationContext)
         setContent {
             HabitsTheme {
-                HabitTrackerApp(::scheduleNotification)
+                // Set up the main content of the app
+                HabitTrackerApp(::scheduleNotification, ::cancelWork)
             }
         }
     }
 
+    // Schedule a notification based on the habit's reminder time
     private fun scheduleNotification(habit: Habit) {
         habit.reminder?.let { reminderTime ->
             val currentTime = LocalDateTime.now()
@@ -56,6 +59,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Create and enqueue a work request to show a notification
     private fun scheduleWork(habit: Habit, initialDelayMillis: Long) {
         val notificationRequest = OneTimeWorkRequestBuilder<NotificationWorker>()
             .setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
@@ -68,8 +72,14 @@ class MainActivity : ComponentActivity() {
             notificationRequest
         )
     }
+
+    // Cancel the scheduled work for a specific habit
+    fun cancelWork(habit: Habit) {
+        workManager.cancelUniqueWork("notification_${habit.id}")
+    }
 }
 
+// Data class to represent a habit
 data class Habit(
     val id: Int,
     var name: String,
@@ -78,6 +88,7 @@ data class Habit(
     var frequency: Int? = null
 )
 
+// Worker to handle showing notifications
 class NotificationWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     companion object {
         const val KEY_HABIT_NAME = "KEY_HABIT_NAME"
@@ -90,13 +101,16 @@ class NotificationWorker(context: Context, params: WorkerParameters) : Worker(co
 
         val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+        // Create notification channel if not already created
         createNotificationChannel(notificationManager)
 
+        // Build and display the notification
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setContentTitle("Habit Reminder")
             .setContentText("Time to complete your habit: $habitName")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI) // Set default notification sound
             .build()
 
         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -104,19 +118,33 @@ class NotificationWorker(context: Context, params: WorkerParameters) : Worker(co
         return Result.success()
     }
 
+    // Create a notification channel for the app
     private fun createNotificationChannel(notificationManager: NotificationManager) {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Habit Reminders",
             NotificationManager.IMPORTANCE_HIGH
-        )
+        ).apply {
+            description = "Channel for Habit Reminders"
+            enableLights(true)
+            enableVibration(true)
+            lightColor = android.graphics.Color.RED
+            vibrationPattern = longArrayOf(1000, 1000) // Vibration pattern
+            // Optionally set a custom sound
+            // sound = Uri.parse("android.resource://${applicationContext.packageName}/raw/notification_sound")
+        }
+
         notificationManager.createNotificationChannel(channel)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HabitTrackerApp(scheduleNotification: (Habit) -> Unit) {
+fun HabitTrackerApp(
+    scheduleNotification: (Habit) -> Unit,
+    cancelWork: (Habit) -> Unit
+) {
+    // State to manage the list of habits and other UI states
     var habits by remember { mutableStateOf(listOf<Habit>()) }
     var nextId by remember { mutableStateOf(0) }
     var showDialog by remember { mutableStateOf(false) }
@@ -125,60 +153,86 @@ fun HabitTrackerApp(scheduleNotification: (Habit) -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Habit Tracker") },
-                actions = {
-                    IconButton(onClick = {
-                        currentHabit = Habit(nextId, "New Habit ${nextId + 1}")
-                        showDialog = true
-                    }) {
-                        Icon(Icons.Default.Add, contentDescription = "Add Habit")
-                    }
-                }
+                title = { Text("Habit Tracker") }
             )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = {
+                    // Show dialog to add a new habit
+                    currentHabit = Habit(nextId, "New Habit ${nextId + 1}")
+                    showDialog = true
+                },
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add Habit")
+            }
         }
     ) { innerPadding ->
-        LazyColumn(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            items(habits) { habit ->
-                HabitItem(
-                    habit = habit,
-                    onComplete = { completedHabit ->
-                        habits = habits.map { if (it.id == completedHabit.id) completedHabit else it }
-                    },
-                    onEdit = {
-                        currentHabit = habit
-                        showDialog = true
+            // Display list of habits
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 64.dp) // Add padding for FAB
+            ) {
+                items(habits) { habit ->
+                    HabitItem(
+                        habit = habit,
+                        onComplete = { completedHabit ->
+                            habits = habits.map { if (it.id == completedHabit.id) completedHabit else it }
+                        },
+                        onEdit = {
+                            // Show dialog to edit the selected habit
+                            currentHabit = habit
+                            showDialog = true
+                        },
+                        onDelete = {
+                            // Remove habit and cancel any scheduled work
+                            habits = habits.filter { it.id != habit.id }
+                            cancelWork(habit)
+                        }
+                    )
+                }
+            }
+
+            // Show dialog for adding or editing a habit
+            if (showDialog) {
+                HabitDialog(
+                    habit = currentHabit!!,
+                    onDismiss = { showDialog = false },
+                    onConfirm = { updatedHabit ->
+                        habits = if (habits.any { it.id == updatedHabit.id }) {
+                            // Update existing habit
+                            habits.map { if (it.id == updatedHabit.id) updatedHabit else it }
+                        } else {
+                            // Add new habit
+                            habits + updatedHabit
+                        }
+                        if (updatedHabit.id == nextId) {
+                            nextId++
+                        }
+                        // Schedule a notification for the updated habit
+                        scheduleNotification(updatedHabit)
+                        showDialog = false
                     }
                 )
             }
         }
     }
-
-    if (showDialog) {
-        HabitDialog(
-            habit = currentHabit!!,
-            onDismiss = { showDialog = false },
-            onConfirm = { updatedHabit ->
-                habits = if (habits.any { it.id == updatedHabit.id }) {
-                    habits.map { if (it.id == updatedHabit.id) updatedHabit else it }
-                } else {
-                    habits + updatedHabit
-                }
-                if (updatedHabit.id == nextId) {
-                    nextId++
-                }
-                scheduleNotification(updatedHabit)
-                showDialog = false
-            }
-        )
-    }
 }
 
 @Composable
-fun HabitItem(habit: Habit, onComplete: (Habit) -> Unit, onEdit: () -> Unit) {
+fun HabitItem(
+    habit: Habit,
+    onComplete: (Habit) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -188,6 +242,7 @@ fun HabitItem(habit: Habit, onComplete: (Habit) -> Unit, onEdit: () -> Unit) {
         Checkbox(
             checked = habit.isCompleted,
             onCheckedChange = { isChecked ->
+                // Update habit completion status
                 onComplete(habit.copy(isCompleted = isChecked))
             }
         )
@@ -204,8 +259,12 @@ fun HabitItem(habit: Habit, onComplete: (Habit) -> Unit, onEdit: () -> Unit) {
                 )
             }
         }
+        // Edit and delete buttons for the habit
         IconButton(onClick = onEdit) {
             Icon(Icons.Default.Edit, contentDescription = "Edit Habit")
+        }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Default.Delete, contentDescription = "Delete Habit")
         }
         if (habit.isCompleted) {
             Icon(
@@ -219,7 +278,12 @@ fun HabitItem(habit: Habit, onComplete: (Habit) -> Unit, onEdit: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HabitDialog(habit: Habit, onDismiss: () -> Unit, onConfirm: (Habit) -> Unit) {
+fun HabitDialog(
+    habit: Habit,
+    onDismiss: () -> Unit,
+    onConfirm: (Habit) -> Unit
+) {
+    // State for managing dialog input fields
     var name by remember { mutableStateOf(habit.name) }
     var date by remember { mutableStateOf(habit.reminder?.toLocalDate() ?: LocalDate.now()) }
     var time by remember { mutableStateOf(habit.reminder?.toLocalTime() ?: LocalTime.now()) }
@@ -238,6 +302,7 @@ fun HabitDialog(habit: Habit, onDismiss: () -> Unit, onConfirm: (Habit) -> Unit)
         title = { Text(if (habit.id == -1) "Add Habit" else "Edit Habit") },
         text = {
             Column {
+                // Input fields for habit details
                 TextField(
                     value = name,
                     onValueChange = { name = it },
@@ -266,6 +331,7 @@ fun HabitDialog(habit: Habit, onDismiss: () -> Unit, onConfirm: (Habit) -> Unit)
         },
         confirmButton = {
             TextButton(onClick = {
+                // Confirm the habit update or addition
                 val reminder = LocalDateTime.of(date, time)
                 onConfirm(habit.copy(name = name, reminder = reminder, frequency = frequency))
             }) {
@@ -279,6 +345,7 @@ fun HabitDialog(habit: Habit, onDismiss: () -> Unit, onConfirm: (Habit) -> Unit)
         }
     )
 
+    // DatePickerDialog to select a date
     if (showDatePicker) {
         DatePickerDialog(
             onDismissRequest = { showDatePicker = false },
@@ -302,6 +369,7 @@ fun HabitDialog(habit: Habit, onDismiss: () -> Unit, onConfirm: (Habit) -> Unit)
         }
     }
 
+    // TimePickerDialog to select a time
     if (showTimePicker) {
         TimePickerDialog(
             onDismissRequest = { showTimePicker = false },
@@ -339,10 +407,11 @@ fun TimePickerDialog(
     )
 }
 
+// Preview function to display the app's main screen in the preview pane
 @Preview(showBackground = true)
 @Composable
 fun HabitTrackerPreview() {
     HabitsTheme {
-        HabitTrackerApp {}
+        HabitTrackerApp({}, {})
     }
 }
