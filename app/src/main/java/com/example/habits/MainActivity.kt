@@ -3,9 +3,15 @@ package com.example.habits
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,31 +24,52 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.work.*
 import com.example.habits.ui.theme.HabitsTheme
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
+// Main activity that handles the lifecycle and sets up the app
 class MainActivity : ComponentActivity() {
     private lateinit var workManager: WorkManager
+    private lateinit var requestPermissionLauncher: ActivityResultLauncher<String>
 
+    // Called when the activity is first created
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Initialize WorkManager for background tasks
         workManager = WorkManager.getInstance(applicationContext)
+
+        // Set up a launcher for requesting permissions
+        requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
+            if (!isGranted) {
+                // If permission is denied, open system settings to manually grant permission
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:${packageName}")
+                startActivity(intent)
+            }
+        }
+
+        // Check and request storage permission if not granted
+        if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+
+        // Set the UI content of the activity
         setContent {
             HabitsTheme {
-                // Set up the main content of the app
                 HabitTrackerApp(::scheduleNotification, ::cancelWork)
             }
         }
     }
 
-    // Schedule a notification based on the habit's reminder time
+    // Schedule a notification for a habit based on its reminder time
     private fun scheduleNotification(habit: Habit) {
         habit.reminder?.let { reminderTime ->
             val currentTime = LocalDateTime.now()
@@ -54,6 +81,7 @@ class MainActivity : ComponentActivity() {
                 val delayUntilNextDay = java.time.Duration.between(currentTime, nextReminderTime)
                 scheduleWork(habit, delayUntilNextDay.toMillis())
             } else {
+                // Schedule the work with the calculated delay
                 scheduleWork(habit, initialDelay.toMillis())
             }
         }
@@ -66,6 +94,7 @@ class MainActivity : ComponentActivity() {
             .setInputData(workDataOf(NotificationWorker.KEY_HABIT_NAME to habit.name))
             .build()
 
+        // Enqueue the work request with a unique name for each habit
         workManager.enqueueUniqueWork(
             "notification_${habit.id}",
             ExistingWorkPolicy.REPLACE,
@@ -79,7 +108,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Data class to represent a habit
+// Data class to represent a habit with relevant fields
 data class Habit(
     val id: Int,
     var name: String,
@@ -88,7 +117,7 @@ data class Habit(
     var frequency: Int? = null
 )
 
-// Worker to handle showing notifications
+// Worker class that handles showing notifications in the background
 class NotificationWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     companion object {
         const val KEY_HABIT_NAME = "KEY_HABIT_NAME"
@@ -96,12 +125,13 @@ class NotificationWorker(context: Context, params: WorkerParameters) : Worker(co
         private const val NOTIFICATION_ID = 1
     }
 
+    // Called when the worker is executed to show the notification
     override fun doWork(): Result {
         val habitName = inputData.getString(KEY_HABIT_NAME) ?: return Result.failure()
 
         val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Create notification channel if not already created
+        // Create the notification channel if it doesn't exist
         createNotificationChannel(notificationManager)
 
         // Build and display the notification
@@ -118,7 +148,7 @@ class NotificationWorker(context: Context, params: WorkerParameters) : Worker(co
         return Result.success()
     }
 
-    // Create a notification channel for the app
+    // Create a notification channel for habit reminders
     private fun createNotificationChannel(notificationManager: NotificationManager) {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -174,11 +204,11 @@ fun HabitTrackerApp(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Display list of habits
+            // Display the list of habits
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = 64.dp) // Add padding for FAB
+                    .padding(bottom = 64.dp) // Add padding for the FAB
             ) {
                 items(habits) { habit ->
                     HabitItem(
@@ -239,6 +269,7 @@ fun HabitItem(
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Checkbox to mark habit as completed
         Checkbox(
             checked = habit.isCompleted,
             onCheckedChange = { isChecked ->
@@ -251,27 +282,20 @@ fun HabitItem(
                 .weight(1f)
                 .padding(start = 16.dp)
         ) {
-            Text(text = habit.name)
+            // Display habit name and reminder details
+            Text(habit.name)
             habit.reminder?.let {
                 Text(
-                    text = "Reminder: ${it.toLocalDate()} at ${it.toLocalTime()} (Every ${habit.frequency ?: 1} day(s))",
+                    "Reminder: ${it.format(DateTimeFormatter.ofPattern("hh:mm a"))}",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
-        // Edit and delete buttons for the habit
         IconButton(onClick = onEdit) {
             Icon(Icons.Default.Edit, contentDescription = "Edit Habit")
         }
         IconButton(onClick = onDelete) {
             Icon(Icons.Default.Delete, contentDescription = "Delete Habit")
-        }
-        if (habit.isCompleted) {
-            Icon(
-                Icons.Default.Check,
-                contentDescription = "Completed",
-                tint = MaterialTheme.colorScheme.primary
-            )
         }
     }
 }
@@ -393,6 +417,23 @@ fun HabitDialog(
 }
 
 @Composable
+fun PermissionRequestDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Permission Required") },
+        text = {
+            Text("This app requires access to your files. Please grant permission in settings.")
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Open Settings")
+            }
+        }
+    )
+}
+
+// Custom TimePickerDialog Composable
+@Composable
 fun TimePickerDialog(
     onDismissRequest: () -> Unit,
     confirmButton: @Composable () -> Unit,
@@ -407,11 +448,13 @@ fun TimePickerDialog(
     )
 }
 
-// Preview function to display the app's main screen in the preview pane
 @Preview(showBackground = true)
 @Composable
-fun HabitTrackerPreview() {
+fun DefaultPreview() {
     HabitsTheme {
-        HabitTrackerApp({}, {})
+        HabitTrackerApp(
+            scheduleNotification = {},
+            cancelWork = {}
+        )
     }
 }
