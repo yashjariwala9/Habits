@@ -7,9 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.provider.Settings
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -34,9 +32,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
 import com.example.habits.ui.theme.HabitsTheme
-import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
@@ -46,48 +41,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var workManager: WorkManager
     private lateinit var requestPermissionLauncher: ActivityResultLauncher<String>
 
-
-    private fun createFileWithContent() {
-        val externalStorageState = Environment.getExternalStorageState()
-        if (externalStorageState == Environment.MEDIA_MOUNTED) {
-            // The device has external storage and it's available for writing
-            val fileName = "hello_yash.txt"
-            val fileContent = "hello yash"
-
-            // Get the directory for the user's public documents directory
-            val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-            val file = File(documentsDir, fileName)
-
-            try {
-                // Make sure the directory exists
-                if (!documentsDir.exists()) {
-                    documentsDir.mkdirs()
-                }
-
-                // Write the content to the file
-                FileOutputStream(file).use { outputStream ->
-                    outputStream.write(fileContent.toByteArray())
-                    outputStream.flush()
-                }
-
-                Log.d("MainActivity", "File created: ${file.absolutePath}")
-
-            } catch (e: IOException) {
-                Log.e("MainActivity", "Error writing to file", e)
-            }
-        } else {
-            Log.e("MainActivity", "External storage is not mounted or available")
-        }
-    }
-
-
-
-
     // Called when the activity is first created
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         workManager = WorkManager.getInstance(applicationContext)
-        createFileWithContent()
 
         // Set up a launcher for requesting permissions
         requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
@@ -96,10 +53,8 @@ class MainActivity : ComponentActivity() {
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                 intent.data = Uri.parse("package:${packageName}")
                 startActivity(intent)
-                createFileWithContent()
             }
         }
-        createFileWithContent()
 
         // Check and request storage permission if not granted
         if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -110,7 +65,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             HabitsTheme {
                 HabitTrackerApp(::scheduleNotification, ::cancelWork)
-                createFileWithContent()
             }
         }
     }
@@ -503,9 +457,4 @@ fun DefaultPreview() {
             cancelWork = {}
         )
     }
-
-
-
-
-
 }
